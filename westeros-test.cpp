@@ -390,7 +390,9 @@ static int kbhit()
    FD_ZERO(&fds);  
    FD_SET(STDIN_FILENO, &fds); //STDIN_FILENO is 0  
    select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);  
-   return FD_ISSET(STDIN_FILENO, &fds);  
+   bool isSet = FD_ISSET(STDIN_FILENO, &fds);  
+   //printf("%s: isSet=%d\n", __FUNCTION__, isSet);
+   return isSet;
 }
 
 static void adjustAttribute( AppCtx *ctx, int c )
@@ -494,6 +496,7 @@ static void adjustAttribute( AppCtx *ctx, int c )
 
 static void processInputMain( AppCtx *ctx, int c )
 {
+   printf("%s: inp.char=%d (%x)\n", __FUNCTION__, c, c);
    switch( c )
    {
       case 0x1B:

@@ -80,7 +80,8 @@ westeros_SOURCES = westeros-main.cpp
 westeros_LDFLAGS= \
    $(AM_LDFLAGS) \
    $(WAYLAND_SERVER_LIBS) \
-   -lwesteros_compositor
+   -lwesteros_compositor \
+   -lwesteros
 if HAVE_GLEW
 westeros_LDFLAGS += -lglut -lGL -lGLEW -lX11 -lEGL
 endif
@@ -113,9 +114,20 @@ westeros_player_LDFLAGS= \
    $(WSTEGL_LIBS) \
    -lEGL
 
+## --- libwesteros ------
+lib_LTLIBRARIES = libwesteros.la
+
+libwesteros_la_SOURCES = \
+   westeros.cpp
+
+libwesteros_la_LDFLAGS= \
+   $(AM_LDFLAGS) \
+   $(WAYLAND_SERVER_LIBS) \
+   -lwesteros_compositor
+
 ## --- Compositor -------
-lib_LTLIBRARIES = libwesteros_compositor.la \
-                  libwesteros_render_embedded.la
+lib_LTLIBRARIES += libwesteros_compositor.la \
+                   libwesteros_render_embedded.la
 
 if ENABLE_WESTEROS_RENDERERGL
 lib_LTLIBRARIES += libwesteros_render_gl.la
