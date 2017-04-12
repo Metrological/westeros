@@ -1938,11 +1938,10 @@ void compositorDispatch( WstCompositor *wctx, void *userData )
 }
 
 
-int westeros_service_start( int argc, char** argv)
+int westeros_service_start (int argc, char** argv, void (*fn_callback)(bool))
 {
-    printf("---> %s: Entering\n", __FUNCTION__);
    int nRC= 0;
-	struct sigaction sigint;
+   struct sigaction sigint;
    const char *rendererModule= 0;
    const char *displayName= 0;
    const char *nestedDisplayName= 0;
@@ -2193,7 +2192,8 @@ int westeros_service_start( int argc, char** argv)
 	         sigemptyset(&sigint.sa_mask);
 	         sigint.sa_flags = SA_RESETHAND;
 	         sigaction(SIGINT, &sigint, NULL);
-
+            if (fn_callback)
+                fn_callback(true);
             while( g_running )
             {
                usleep( 10000 );
@@ -2227,7 +2227,6 @@ exit:
 
 void westeros_service_stop()
 {
-    printf("---> %s: Entering\n", __FUNCTION__);
 	g_running= false;
 }
 
