@@ -193,7 +193,8 @@ libwesteros_render_embedded_la_LDFLAGS += -lwesteros_simplebuffer_server
 endif
 
 pkgconfigdir = $(libdir)/pkgconfig
-pkgconfig_DATA = westeros-compositor.pc
+pkgconfig_DATA = westeros-compositor.pc \
+                 westeros.pc
 
 distcleancheck_listfiles = *-libtool
 

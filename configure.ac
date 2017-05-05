@@ -81,7 +81,7 @@ AC_ARG_ENABLE([app],
               [
                 case "${enableval}" in
                  yes) ENABLE_WESTEROS_APP=true ;;
-                  no) AC_MSG_ERROR([westeros app is disabled]) ;;
+                  no) ENABLE_WESTEROS_APP=false ;;
                    *) AC_MSG_ERROR([bad value ${enableval} for --enable-app]) ;;
                 esac
               ],
@@ -176,7 +176,7 @@ $GST_PKG_ERRORS])], [])
 WAYLANDLIB="-lwayland-server"
 AC_SUBST(WAYLANDLIB)
 
-AC_CONFIG_FILES([Makefile westeros-compositor.pc])
+AC_CONFIG_FILES([Makefile westeros-compositor.pc westeros.pc])
 AC_SUBST(WAYLAND_CFLAGS)
 AC_SUBST(GUPNP_VERSION)
 AC_SUBST(ENABLE_WESTEROS_APP)
