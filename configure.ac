@@ -171,7 +171,21 @@ AC_ARG_ENABLE([xdgv5],
                 esac
               ],
               [echo "xdg_shell protocol v5 is disabled"])
-AM_CONDITIONAL([ENABLE_XDG_V5], [test x$ENABLE_XDG_V5 = xtrue])              
+AM_CONDITIONAL([ENABLE_XDG_V5], [test x$ENABLE_XDG_V5 = xtrue])      
+
+ENABLE_VC5=" "
+AC_ARG_ENABLE([vc5],
+        AS_HELP_STRING([--enable-vc5],[enable vc5 build]),
+        [
+          case "${enableval}" in
+           yes) ENABLE_VC5=true ;;
+           no) ENABLE_VC5=false ;;
+          *) AC_MSG_ERROR([bad value ${enableval} for --enable-vc5 ]) ;;
+           esac
+           ],
+         [echo "vc5 build is enable"])
+AM_CONDITIONAL([ENABLE_VC5], [test x$ENABLE_VC5 = xtrue])
+AC_SUBST(ENABLE_VC5)
 
 AC_ARG_ENABLE([essos],
               AS_HELP_STRING([--enable-essos],[enable essos (default is yes)]),
@@ -208,4 +222,3 @@ AC_SUBST(ENABLE_WESTEROS_APP)
 AC_SUBST(ENABLE_WESTEROS_TEST)
 AC_SUBST(ENABLE_WESTEROS_PLAYER)
 AC_OUTPUT
-

@@ -55,6 +55,17 @@ if ENABLE_XDG_V5
 AM_CXXFLAGS += -DUSE_XDG_VERSION5 -I$(srcdir)/protocol/version5
 endif
 
+if ENABLE_VC5
+AM_CXXFLAGS += \
+    -DVCX=5 \
+    -DBSTD_CPU_ENDIAN=${NEXUS_ENDIAN} \
+    -I${PKG_CONFIG_SYSROOT_DIR}/usr/include/interface/khronos/include \
+    -I${PKG_CONFIG_SYSROOT_DIR}/usr/include/interface/khronos/include/bcg_abstract \
+    -I${PKG_CONFIG_SYSROOT_DIR}/usr/include/vcos/include
+else
+AM_CXXFLAGS += -DVCX=3
+endif
+
 AM_CFLAGS = $(AM_CXXFLAGS) -Wno-deprecated-declarations
 
 BUILT_SOURCES= libwesteros_compositor.la \
