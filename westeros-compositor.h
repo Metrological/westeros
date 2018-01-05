@@ -56,7 +56,7 @@ typedef enum _WstClient_status
 typedef void (*WstTerminatedCallback)( WstCompositor *ctx, void *userData );
 typedef void (*WstDispatchCallback)( WstCompositor *ctx, void *userData );
 typedef void (*WstInvalidateSceneCallback)( WstCompositor *ctx, void *userData );
-typedef void (*WstDecodeHandlerCallback)( WstCompositor *ctx, void *userData, uint32_t decoderHandle);
+typedef void (*WstDecodeHandlerCallback)( WstCompositor *ctx, void *userData, uint64_t decoderHandle);
 typedef void (*WstHidePointerCallback)( WstCompositor *ctx, bool hidePointer, void *userData );
 typedef void (*WstClientStatus)( WstCompositor *ctx, int status, int clientPID, int detail, void *userData );
 
@@ -205,8 +205,20 @@ bool WstCompositorSetIsRepeater( WstCompositor *ctx, bool isRepeater );
  * its scene when WstCompositorComposeEmbedded is called.  An embedded
  * compositor should use libwesteros_render_embedded.so.0 as its
  * renderer module (or some other module that supports embedded composition).
+ * Note that multi-threaded applications that use embedded composition must
+ * call WstCompositorStart and WstCompositorComposeEmbedded on the same thread.
  */
 bool WstCompositorSetIsEmbedded( WstCompositor *ctx, bool isEmbedded );
+
+/**
+ * WstCompositorSetVpcBridge
+ *
+ * Specify if the embedded compositor instance should establish a VPC
+ * (Video Path Control) bridge with another compositor instance.  A
+ * VPC bridge will allow control over video path and positioning to be
+ * extended to higher level compositors from a nested ebedded compositor.
+ */
+bool WstCompositorSetVpcBridge( WstCompositor *ctx, char *displayName );
 
 /**
  * WstCompositorSetOutputSize
@@ -336,6 +348,14 @@ bool WstCompositorGetIsRepeater( WstCompositor *ctx );
  * compositor or not.  This may be called at any time.
  */
 bool WstCompositorGetIsEmbedded( WstCompositor *ctx );
+
+/**
+ * WstCompositorGetVpcBridge
+ *
+ * Determine the display, if any, with which this embedded compistor instance
+ * will establish a VPC (Video Path Control) bridge.
+ */
+const char* WstCompositorSetVpcBridge( WstCompositor *ctx );
 
 /**
  * WstCompositorGetOutputSize

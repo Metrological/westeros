@@ -65,9 +65,9 @@ class rtMediaCaptureObject;
 #define POST_TIMEOUT (4000)
 #define POST_CHUNK_SIZE (16*1024)
 #define EMIT_BUFFER_SIZE (12*POST_CHUNK_SIZE)
-#define PROGRESS_INTERVAL (2000000)
 
 #define min( a, b ) ( ((a) <= (b)) ? (a) : (b) )
+#define max( a, b ) ( ((a) >= (b)) ? (a) : (b) )
 
 typedef struct _MediaCapContext MediaCapContext;
 
@@ -136,6 +136,8 @@ typedef struct _MediaCapContext
    int nextAudioStreamId;
    #ifdef MEDIACAPTURE_USE_RTREMOTE
    pthread_t apiThreadId;
+   bool reportProgress;
+   long long progressInterval;
    bool apiThreadStarted;
    bool apiThreadStopRequested;
    rtRemoteEnvironment *rtEnv;
@@ -164,6 +166,7 @@ typedef struct _MediaCapContext
    bool postThreadStarted;
    bool postThreadStopRequested;
    bool postThreadAborted;
+   bool foundStartPoint;
    bool hitStopPoint;
    bool goodCapture;
    bool captureCompleteSent;
@@ -182,6 +185,7 @@ static long long getCurrentTimeMillis(void);
 static void releaseSourceResources( SrcInfo *si );
 static void freeSource(MediaCapContext *ctx, SrcInfo *si);
 static void freeSources(MediaCapContext *ctx);
+static void emitPipelineGraph(MediaCapContext *ctx, GstElement *src);
 static void findSources(MediaCapContext *ctx);
 static void prepareForCapture( MediaCapContext *ctx );
 static void captureProbeDestroy( gpointer userData );
@@ -193,8 +197,9 @@ static void processCaptureData( MediaCapContext *ctx, SrcInfo *si, unsigned char
 static bool readTimeStamp( unsigned char *p, long long& timestamp );
 static int writeTimeStamp( unsigned char *p, long long pts, long long dts );
 static int writePCR( unsigned char *p, long long pcr );
+static bool discardCaptureData( MediaCapContext *ctx, long long startPTS );
 static void flushCaptureData( MediaCapContext *ctx );
-static void flushCaptureDataByTime( MediaCapContext *ctx, long long pts, long long nextPCR );
+static void flushCaptureDataByTime( MediaCapContext *ctx, long long ptsLinit, long long nextPCR );
 static void checkBufferLevels( MediaCapContext *ctx, long long pcr );
 static void flushPacket( MediaCapContext *ctx, SrcInfo *si );
 static void performEncapsulation( MediaCapContext *ctx, SrcInfo *si, unsigned char *data, int len );
@@ -1260,6 +1265,82 @@ static void freeSources(MediaCapContext *ctx)
    DEBUG("freeSources: exit");
 }
 
+static void emitPipelineGraph(MediaCapContext *ctx, GstElement *src)
+{
+   GstElement *element= src;
+
+   GstIterator *iterPad= gst_element_iterate_src_pads( element );
+   if ( iterPad )
+   {
+      GValue itemPad= G_VALUE_INIT;
+      while( gst_iterator_next( iterPad, &itemPad ) == GST_ITERATOR_OK )
+      {
+         GstPad *pad= (GstPad*)g_value_get_object( &itemPad );
+         if ( pad )
+         {
+            while( GST_IS_PROXY_PAD(pad) )
+            {
+               GstProxyPad *internalPad= gst_proxy_pad_get_internal(GST_PROXY_PAD(pad));
+               if ( internalPad )
+               {
+                  pad= GST_PAD(internalPad);
+                  gst_object_unref(internalPad);
+               }
+            }
+            GstPad *peerPad= gst_pad_get_peer(pad);
+            if ( peerPad )
+            {
+               while ( GST_IS_PROXY_PAD(peerPad) )
+               {
+                  GstProxyPad *internalPad= gst_proxy_pad_get_internal(GST_PROXY_PAD(peerPad));
+                  if ( internalPad )
+                  {
+                     peerPad= gst_pad_get_peer(GST_PAD(internalPad));
+                     gst_object_unref(internalPad);
+                  }
+               }
+               if ( peerPad )
+               {
+                  GstElement *peerElement= gst_pad_get_parent_element(peerPad);
+                  if ( peerElement )
+                  {
+                     INFO("pipeline graph: element name (%s) connected to (%s)", gst_element_get_name(element), gst_element_get_name(peerElement));
+
+                     if ( GST_IS_BIN(peerElement) )
+                     {
+                        GstElement *binElement;
+                        GstIterator *iterElement= gst_bin_iterate_elements( GST_BIN(peerElement) );
+                        if ( iterElement )
+                        {
+                           GValue itemElement= G_VALUE_INIT;
+                           while( gst_iterator_next( iterElement, &itemElement ) == GST_ITERATOR_OK )
+                           {
+                              binElement= (GstElement*)g_value_get_object( &itemElement );
+                              if ( binElement )
+                              {
+                                 emitPipelineGraph( ctx, binElement );
+                              }
+                              g_value_reset( &itemElement );
+                           }
+                           gst_iterator_free(iterElement);
+                        }
+                     }
+                     else
+                     {
+                        emitPipelineGraph( ctx, peerElement );
+                     }
+                     gst_object_unref(peerElement);
+                  }
+               }
+               gst_object_unref(peerPad);
+            }
+         }
+         g_value_reset( &itemPad );
+      }
+      gst_iterator_free(iterPad);
+   }
+}
+
 static void findSources(MediaCapContext *ctx)
 {
    GstElement *pipeline= 0;
@@ -1975,7 +2056,7 @@ static size_t postReadCallback(char *buffer, size_t size, size_t nitems, void *u
 
          ctx->totalBytesPosted += offset;
          long long intervalBytes= ctx->totalBytesPosted-ctx->lastReportedPostedBytes;
-         if ( intervalBytes >= PROGRESS_INTERVAL )
+         if ( ctx->reportProgress && (intervalBytes >= ctx->progressInterval) )
          {
             if ( ctx->apiObj.ptr() )
             {
@@ -2193,6 +2274,7 @@ static void startCapture( MediaCapContext *ctx, bool toFile, const char *dest, i
 
       if ( okToStart )
       {
+         ctx->foundStartPoint= false;
          ctx->durationCaptured= 0LL;
          ctx->lastEmittedPTS= -1LL;
          ctx->captureStartTime= -1LL;
@@ -2204,6 +2286,8 @@ static void startCapture( MediaCapContext *ctx, bool toFile, const char *dest, i
             ctx->needEmitPCR= true;
          }
 
+         bool graphPipeline= (getenv("MEDIACAPTURE_GRAPH_PIPELINE") != 0);
+
          // Add non-video probe
          for ( std::vector<SrcInfo*>::iterator it= ctx->srcList.begin();
                it != ctx->srcList.end();
@@ -2213,8 +2297,16 @@ static void startCapture( MediaCapContext *ctx, bool toFile, const char *dest, i
 
             if ( !si->isVideo )
             {
+               if ( graphPipeline )
+               {
+                  emitPipelineGraph( ctx, si->element );
+               }
                si->bufferCount= 0;
                si->firstPTS= -1LL;
+               si->accumFirstPTS= -1LL;
+               si->accumLastPTS= -1LL;
+               si->accumTestPTS= -1LL;
+               si->accumOffset= 0;
                si->probeId= gst_pad_add_probe( si->pad,
                                                (GstPadProbeType)(GST_PAD_PROBE_TYPE_BUFFER|GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
                                                captureProbe,
@@ -2233,8 +2325,16 @@ static void startCapture( MediaCapContext *ctx, bool toFile, const char *dest, i
 
             if ( si->isVideo )
             {
+               if ( graphPipeline )
+               {
+                  emitPipelineGraph( ctx, si->element );
+               }
                si->bufferCount= 0;
                si->firstPTS= -1LL;
+               si->accumFirstPTS= -1LL;
+               si->accumLastPTS= -1LL;
+               si->accumTestPTS= -1LL;
+               si->accumOffset= 0;
                si->probeId= gst_pad_add_probe( si->pad,
                                                (GstPadProbeType)(GST_PAD_PROBE_TYPE_BUFFER|(int)GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
                                                captureProbe,
@@ -2272,10 +2372,6 @@ static void stopCapture( MediaCapContext *ctx )
             gst_pad_remove_probe( si->pad, probeId );
          }
       }
-
-      DEBUG("stopCapture: calling flushCaptureData");
-      flushCaptureData( ctx );
-      DEBUG("stopCapture: done calling flushCaptureData");
 
       if ( ctx->captureToFile )
       {
@@ -2472,6 +2568,76 @@ static int writePCR( unsigned char *p, long long pcr )
    return 6;
 }
 
+static bool discardCaptureData( MediaCapContext *ctx, long long startPTS )
+{
+   bool noDataLeft= false;
+   INFO("discardCaptureData: discard data prior to PTS %lld", startPTS );
+   for ( std::vector<SrcInfo*>::iterator it= ctx->srcList.begin();
+         it != ctx->srcList.end();
+         ++it )
+   {
+      SrcInfo *si= (*it);
+      unsigned char *packet;
+      long long ptsFirst= -1LL;
+      long long pts= -1LL;
+      int firstBlockOffset= -1;
+      bool discardingData= false;
+
+      for( int i= 0; i < si->accumOffset; i += DEFAULT_PACKET_SIZE )
+      {
+         packet= si->accumulator+i;
+         if ( packet[1] & 0x40 )
+         {
+            int payloadOffset= 4;
+            if ( packet[3] & 0x20 )
+            {
+               payloadOffset += (1+packet[4]);
+            }
+            if ( (packet[payloadOffset] == 0x00) && (packet[payloadOffset+1] == 0x00) && (packet[payloadOffset+2] == 0x01) )
+            {
+               if ( packet[payloadOffset+7] & 0x80 )
+               {
+                  bool validPTS= readTimeStamp( &packet[payloadOffset+9], pts );
+                  if ( validPTS )
+                  {
+                     if ( ptsFirst < 0 )
+                     {
+                        ptsFirst= pts;
+                     }
+                     if ( pts < startPTS )
+                     {
+                        discardingData= true;
+                     }
+                     else
+                     {
+                        firstBlockOffset= i;
+                        break;
+                     }
+                  }
+               }
+            }
+         }
+      }
+      if ( firstBlockOffset == -1 )
+      {
+         DEBUG("discardCaptureData: pid %d discarding pts %lld to %lld inclusive", si->pid, ptsFirst, pts);
+         noDataLeft= true;
+         si->accumOffset= 0;
+      }
+      else if ( discardingData && (firstBlockOffset > 0) )
+      {
+         DEBUG("discardCaptureData: pid %d discarding pts %lld to %lld", si->pid, ptsFirst, pts);
+         int dataRemaining= si->accumOffset-firstBlockOffset;
+         if ( dataRemaining )
+         {
+            memmove( si->accumulator, si->accumulator+firstBlockOffset, dataRemaining );
+         }
+         si->accumOffset= dataRemaining;
+      }
+   }
+   return noDataLeft;
+}
+
 static void flushCaptureData( MediaCapContext *ctx )
 {
    for ( std::vector<SrcInfo*>::iterator it= ctx->srcList.begin();
@@ -2483,6 +2649,10 @@ static void flushCaptureData( MediaCapContext *ctx )
       flushPacket( ctx, si );
       if ( si->accumOffset )
       {
+         if ( (ctx->pcrPid == si->pid) && (si->accumLastPTS >= 0) )
+         {
+            ctx->lastEmittedPTS= si->accumLastPTS;
+         }
          emitCaptureData( ctx, si->accumulator, si->accumOffset );
          si->accumOffset= 0;
       }
@@ -2493,7 +2663,7 @@ static void flushCaptureDataByTime( MediaCapContext *ctx, long long ptsLimit, lo
 {   
    long long nextPTSToEmit;
 
-   DEBUG("flushCaptureDataByTime: pts %llx", ptsLimit);
+   DEBUG("flushCaptureDataByTime: ptsLimit %llx", ptsLimit);
    for( ; ; )
    {
       nextPTSToEmit= -1LL;
@@ -2659,7 +2829,7 @@ static void checkBufferLevels( MediaCapContext *ctx, long long pcr )
          }
       }
 
-      DEBUG("pid %X accumulator contains pts %llx to  %llx next pcr %llx", si->pid, firstPTS, lastPTS, pcr);
+      DEBUG("pid %X accumulator contains pts %llx to %llx next pcr %llx", si->pid, firstPTS, lastPTS, pcr);
       si->accumFirstPTS= firstPTS;
       si->accumLastPTS= lastPTS;
 
@@ -2674,7 +2844,14 @@ static void checkBufferLevels( MediaCapContext *ctx, long long pcr )
                firstCommonPTS= -2LL;
                break;
             default:
-               firstCommonPTS= min( firstCommonPTS, firstPTS );
+               if ( ctx->foundStartPoint )
+               {
+                  firstCommonPTS= min( firstCommonPTS, firstPTS );
+               }
+               else
+               {
+                  firstCommonPTS= max( firstCommonPTS, firstPTS );
+               }
                break;
          }
       }
@@ -2704,9 +2881,24 @@ static void checkBufferLevels( MediaCapContext *ctx, long long pcr )
    }
    
    DEBUG("firstCommonPTS %llx lastCommonPTS %llx", firstCommonPTS, lastCommonPTS);
-   if ( !ctx->hitStopPoint && (firstCommonPTS > 0) && (lastCommonPTS > firstCommonPTS) )
+   if ( (firstCommonPTS > 0) && (lastCommonPTS > firstCommonPTS) )
    {
-      flushCaptureDataByTime( ctx, lastCommonPTS, pcr );
+      if ( !ctx->foundStartPoint )
+      {
+         ctx->foundStartPoint= !discardCaptureData( ctx, firstCommonPTS );
+         if ( ctx->foundStartPoint )
+         {
+            ctx->captureStartTime= firstCommonPTS;
+            if ( ctx->captureDuration )
+            {
+               ctx->captureStopTime= ctx->captureStartTime + ctx->captureDuration;
+            }
+         }
+      }
+      if ( ctx->foundStartPoint && !ctx->hitStopPoint )
+      {
+         flushCaptureDataByTime( ctx, lastCommonPTS, pcr );
+      }
    }
 }
 
@@ -2747,9 +2939,28 @@ static void flushPacket( MediaCapContext *ctx, SrcInfo *si )
       si->accumOffset += DEFAULT_PACKET_SIZE;
       if ( si->accumOffset == si->accumSize )
       {
-         DEBUG("flushPacket: calling emitCaptureData: pid %X len %d", si->pid, si->accumOffset);
-         emitCaptureData( ctx, si->accumulator, si->accumOffset );
-         si->accumOffset= 0;
+         int accumSizeNew= si->accumSize*2;
+         unsigned char *accumulatorNew= (unsigned char*)malloc( accumSizeNew );
+         if ( accumulatorNew )
+         {
+            INFO("flushPacket: grow pid %d accumulator to %d bytes", si->pid, accumSizeNew);
+            memcpy( accumulatorNew, si->accumulator, si->accumSize );
+            free( si->accumulator );
+            si->accumulator= accumulatorNew;
+            si->accumSize= accumSizeNew;
+         }
+         else
+         {
+            ERROR("flushPacket: unable to grow pid %d accumulator - capture will be missing some ES data for other pids", si->pid);
+
+            DEBUG("flushPacket: calling emitCaptureData: pid %X len %d", si->pid, si->accumOffset);
+            if ( (ctx->pcrPid == si->pid) && (si->accumLastPTS >= 0) )
+            {
+               ctx->lastEmittedPTS= si->accumLastPTS;
+            }
+            emitCaptureData( ctx, si->accumulator, si->accumOffset );
+            si->accumOffset= 0;
+         }
       }
       si->packetOffset= 0;
       lenAvail= DEFAULT_PACKET_SIZE;
@@ -3061,6 +3272,8 @@ void* MediaCaptureCreateContext( GstElement *element )
 {
    MediaCapContext *ctx= 0;
    const char *env;
+   bool reportProgress= false;
+   int progressInterval= 0;
 
    env= getenv("MEDIACAPTURE_DEBUG");
    if ( env )
@@ -3070,6 +3283,17 @@ void* MediaCaptureCreateContext( GstElement *element )
       if ( level > 10 ) level= 10;
       gDebugLevel= level;
       ERROR("setting log level to %d", gDebugLevel);
+   }
+
+   env= getenv("MEDIACAPTURE_REPORT_PROGRESS");
+   if ( env )
+   {
+      progressInterval= atoi(env);
+      if ( progressInterval > 0 )
+      {
+         reportProgress= true;
+         INFO("setting progress interval to %d", progressInterval);
+      }
    }
 
    INFO("MediaCaptureCreateContext: enter");
@@ -3085,6 +3309,8 @@ void* MediaCaptureCreateContext( GstElement *element )
       ctx->nextAudioStreamId= 0xD0;
       ctx->videoPid= -1;
       ctx->curlfd= -1;
+      ctx->reportProgress= reportProgress;
+      ctx->progressInterval= progressInterval*1000000LL;
 
       initCRCTable();
 

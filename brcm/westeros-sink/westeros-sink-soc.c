@@ -667,7 +667,10 @@ gboolean gst_westeros_sink_soc_ready_to_paused( GstWesterosSink *sink, gboolean 
 
    if ( sink->vpcSurface )
    {
-       wl_vpc_surface_set_decoder_handle(sink->vpcSurface, sink->soc.videoDecoder);
+       uint64_t decoderHandle = sink->soc.videoDecoder;
+       uint32_t decoderHandleHi = (uint32_t)(decoderHandle >> 32);
+       uint32_t decoderHandleLo = (uint32_t)(decoderHandle & 0xffffffff);
+       wl_vpc_surface_set_decoder_handle(sink->vpcSurface, decoderHandleHi, decoderHandleLo);
    }
 
    return TRUE;
@@ -1248,6 +1251,7 @@ static void processFrame( GstWesterosSink *sink )
    unsigned segmentNumber= 0;
    gboolean eosDetected= FALSE;
    gboolean videoPlaying= FALSE;
+   guint64 prevPTS;
    
    GST_DEBUG_OBJECT(sink, "processFrame: enter");
    
@@ -1283,23 +1287,30 @@ static void processFrame( GstWesterosSink *sink )
                 break;
             }
 
+            prevPTS= sink->currentPTS;
             sink->currentPTS= ((gint64)captureStatus.pts)*2LL;
             if (sink->prevPositionSegmentStart != sink->positionSegmentStart)
             {
-               gint64 newPts =  90LL * sink->positionSegmentStart / GST_MSECOND + /*ceil*/ 1;
-               GST_DEBUG("SegmentStart changed! Updating first PTS to %lld ", newPts);
+               if ( sink->currentPTS == 0 )
+               {
+                  gint64 newPts=  90LL * sink->positionSegmentStart / GST_MSECOND + /*ceil*/ 1;
+                  sink->firstPTS= newPts;
+               }
+               else
+               {
+                  sink->firstPTS= sink->currentPTS;
+               }
                sink->prevPositionSegmentStart = sink->positionSegmentStart;
-               sink->firstPTS = newPts;
+               GST_DEBUG("SegmentStart changed! Updating first PTS to %lld ", sink->firstPTS);
             }
             if ( sink->currentPTS != 0 || sink->soc.frameCount == 0 )
             {
-               gint64 calculatedPosition = GST_MSECOND * sink->currentPTS / 90LL;
-               gint64 calculatedFirstPtsPosition = GST_MSECOND * sink->firstPTS / 90LL;
-               if (calculatedPosition < sink->positionSegmentStart ||
-                   calculatedFirstPtsPosition < sink->positionSegmentStart) {
-                  GST_INFO("calculatedPosition %lld or calculatedFirstPtsPosition %lld is less than sink->positionSegmentStart %lld", calculatedPosition, calculatedFirstPtsPosition, sink->positionSegmentStart);
-                  UNLOCK(sink);
-                  return;
+               if ( (sink->currentPTS < sink->firstPTS) && (sink->currentPTS > 90000) )
+               {
+                  // If we have hit a discontinuity that doesn't look like rollover, then
+                  // treat this as the case of looping a short clip.  Adjust our firstPTS
+                  // to keep our running time correct.
+                  sink->firstPTS= sink->firstPTS-(prevPTS-sink->currentPTS);
                }
                sink->position= sink->positionSegmentStart + ((sink->currentPTS - sink->firstPTS) * GST_MSECOND) / 90LL;
             }
@@ -1362,6 +1373,7 @@ static void updateVideoStatus( GstWesterosSink *sink )
    gboolean noFrame= FALSE;
    gboolean eosDetected= FALSE;
    gboolean videoPlaying= FALSE;
+   guint64 prevPTS;
 
    LOCK( sink );
    eosDetected= sink->eosDetected;
@@ -1373,23 +1385,30 @@ static void updateVideoStatus( GstWesterosSink *sink )
       LOCK( sink );
       if ( videoStatus.firstPtsPassed && (sink->currentPTS/2 != videoStatus.pts) )
       {
+         prevPTS= sink->currentPTS;
          sink->currentPTS= ((gint64)videoStatus.pts)*2LL;
          if (sink->prevPositionSegmentStart != sink->positionSegmentStart)
          {
-            gint64 newPts =  90LL * sink->positionSegmentStart / GST_MSECOND + /*ceil*/ 1;
-            GST_DEBUG("SegmentStart changed! Updating first PTS to %lld ", newPts);
+            if ( sink->currentPTS == 0 )
+            {
+               gint64 newPts=  90LL * sink->positionSegmentStart / GST_MSECOND + /*ceil*/ 1;
+               sink->firstPTS= newPts;
+            }
+            else
+            {
+               sink->firstPTS= sink->currentPTS;
+            }
             sink->prevPositionSegmentStart = sink->positionSegmentStart;
-            sink->firstPTS = newPts;
+            GST_DEBUG("SegmentStart changed! Updating first PTS to %lld ", sink->firstPTS);
          }
          if ( sink->currentPTS != 0 || sink->soc.frameCount == 0 )
          {
-            gint64 calculatedPosition = GST_MSECOND * sink->currentPTS / 90LL;
-            gint64 calculatedFirstPtsPosition = GST_MSECOND * sink->firstPTS / 90LL;
-            if (calculatedPosition < sink->positionSegmentStart ||
-                calculatedFirstPtsPosition < sink->positionSegmentStart) {
-               GST_INFO("calculatedPosition %lld or calculatedFirstPtsPosition %lld is less than sink->positionSegmentStart %lld", calculatedPosition, calculatedFirstPtsPosition, sink->positionSegmentStart);
-               UNLOCK(sink);
-               return;
+            if ( (sink->currentPTS < sink->firstPTS) && (sink->currentPTS > 90000) )
+            {
+               // If we have hit a discontinuity that doesn't look like rollover, then
+               // treat this as the case of looping a short clip.  Adjust our firstPTS
+               // to keep our running time correct.
+               sink->firstPTS= sink->firstPTS-(prevPTS-sink->currentPTS);
             }
             sink->position= sink->positionSegmentStart + ((sink->currentPTS - sink->firstPTS) * GST_MSECOND) / 90LL;
          }
