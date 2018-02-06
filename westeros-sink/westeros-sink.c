@@ -104,8 +104,7 @@ static void shellSurfaceId(void *data,
       wl_simple_shell_set_opacity( sink->shell, sink->surfaceId, op);
       wl_simple_shell_get_status( sink->shell, sink->surfaceId );
    }
-   wl_display_flush(sink->display);
-}
+}                           
 
 static void shellSurfaceCreated(void *data,
                                 struct wl_simple_shell *wl_simple_shell,
@@ -262,8 +261,6 @@ static void registryHandleGlobal(void *data,
       wl_proxy_set_queue((struct wl_proxy*)sink->vpc, sink->queue);
    }
    gst_westeros_sink_soc_registryHandleGlobal( sink, registry, id, interface, version );
-
-   wl_display_flush(sink->display);
 }
 
 static void registryHandleGlobalRemove(void *data, 
@@ -513,7 +510,8 @@ gst_westeros_sink_init(GstWesterosSink *sink, GstWesterosSinkClass *gclass)
                sink->surface= wl_compositor_create_surface(sink->compositor);
                printf("gst_westeros_sink_init: surface=%p\n", (void*)sink->surface);
                wl_proxy_set_queue((struct wl_proxy*)sink->surface, sink->queue);
-               wl_display_flush( sink->display );
+               
+               wl_display_dispatch_queue( sink->display, sink->queue );
             }
             else
             {
@@ -650,11 +648,14 @@ static void gst_westeros_sink_set_property(GObject *object, guint prop_id, const
                   wl_simple_shell_set_visible( sink->shell, sink->surfaceId, true);
                   
                   wl_simple_shell_get_status( sink->shell, sink->surfaceId);
-                  
-                  wl_display_flush( sink->display );
                }
-            }            
-                    
+            } 
+                  
+            if ( sink->queue )
+            {     
+		       wl_display_dispatch_queue( sink->display, sink->queue );
+	        }
+            
             sink->srcWidth= sink->windowWidth;
             sink->srcHeight= sink->windowHeight;
          }
@@ -742,7 +743,9 @@ static GstStateChangeReturn gst_westeros_sink_change_state(GstElement *element, 
                {
                   wl_vpc_surface_set_geometry( sink->vpcSurface, sink->windowX, sink->windowY, sink->windowWidth, sink->windowHeight );
                }
-               wl_display_flush( sink->display );
+               
+               wl_display_dispatch_queue( sink->display, sink->queue );
+               
                printf("westeros-sink: null_to_ready: done add vpcSurface listener\n");
             }
             else
